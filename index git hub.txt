@@ -7644,7 +7644,7 @@ function loadLessonsForSelectedDate() {
 
     })
 
-    .getLessons();
+    .getLessonsForDate_(selectedDate);
 
 }
 
