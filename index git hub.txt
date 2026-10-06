@@ -2868,6 +2868,9 @@ const SECURED = new Set([
   'getStudents',
   'getStudentProfile',
   'getLessons',
+  'getLessonsForDate',
+  'getLessonsForRange',
+  'getLessonFlagsForRange',
   'getSubscriptions',
   'getStudentReports',
   'getReportById',
@@ -7644,7 +7647,7 @@ function loadLessonsForSelectedDate() {
 
     })
 
-    .getLessonsForDate_(selectedDate);
+    .getLessonsForDate(selectedDate);
 
 }
 
@@ -11262,7 +11265,10 @@ document.addEventListener(
         server
           .withSuccessHandler(function (flags) { SCH.flags = flags || {}; finish_(); })
           .withFailureHandler(function () { SCH.flags = {}; finish_(); })
-          .getLessonFlags();
+          .getLessonFlagsForRange(
+            formatKey_(SCH.weekStart),
+            formatKey_(new Date(SCH.weekStart.getFullYear(), SCH.weekStart.getMonth(), SCH.weekStart.getDate() + 6))
+          )
  
         function finish_() {
           var n = new Date(wallNow_());
@@ -11278,7 +11284,10 @@ document.addEventListener(
             escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
         }
       })
-      .getLessons();
+      .getLessonsForRange(
+        formatKey_(SCH.weekStart),
+        formatKey_(new Date(SCH.weekStart.getFullYear(), SCH.weekStart.getMonth(), SCH.weekStart.getDate() + 6))
+      )
   }
  
   function fillTeacherSelect_() {
