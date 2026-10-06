@@ -11266,8 +11266,8 @@ document.addEventListener(
           .withSuccessHandler(function (flags) { SCH.flags = flags || {}; finish_(); })
           .withFailureHandler(function () { SCH.flags = {}; finish_(); })
           .getLessonFlagsForRange(
-            formatKey_(SCH.weekStart),
-            formatKey_(new Date(SCH.weekStart.getFullYear(), SCH.weekStart.getMonth(), SCH.weekStart.getDate() + 6))
+            dateKey_(SCH.weekStart),
+            dateKey_(new Date(SCH.weekStart.getFullYear(), SCH.weekStart.getMonth(), SCH.weekStart.getDate() + 6))
           )
  
         function finish_() {
@@ -11285,8 +11285,8 @@ document.addEventListener(
         }
       })
       .getLessonsForRange(
-        formatKey_(SCH.weekStart),
-        formatKey_(new Date(SCH.weekStart.getFullYear(), SCH.weekStart.getMonth(), SCH.weekStart.getDate() + 6))
+        dateKey_(SCH.weekStart),
+        dateKey_(new Date(SCH.weekStart.getFullYear(), SCH.weekStart.getMonth(), SCH.weekStart.getDate() + 6))
       )
   }
  
