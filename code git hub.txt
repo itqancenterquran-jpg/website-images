@@ -2553,546 +2553,117 @@ function getLessonTimeKey_(value) {
    ========================================================= */
 
 function syncStudentFutureLessons_(data) {
-
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const lessonsSheet = ss.getSheetByName('الحصص');
+  if (!lessonsSheet) throw new Error('لم يتم العثور على ورقة الحصص');
+  if (!data || !data.studentId) throw new Error('رقم الطالب مطلوب لمزامنة الحصص');
+  if (!data.teacherId) throw new Error('رقم المدرس مطلوب لمزامنة الحصص');
 
-  const lessonsSheet =
-    ss.getSheetByName('الحصص');
+  const days = Array.from(new Set(String(data.lessonDays || '').split(',').map(Number).filter(function(d){return !isNaN(d)&&d>=0&&d<=6;}))).sort(function(a,b){return a-b;});
+  if (!days.length) throw new Error('لم يتم تحديد أيام الحصص');
 
-  if (!lessonsSheet) {
-    throw new Error('لم يتم العثور على ورقة الحصص');
+  const startDate = parseDate(data.subscriptionStart);
+  if (!startDate || isNaN(startDate.getTime())) throw new Error('تاريخ بداية الاشتراك غير صحيح');
+
+  const lastRow = lessonsSheet.getLastRow();
+  if (lastRow < 2) return createFutureLessonsForStudent_(data);
+
+  const values = lessonsSheet.getDataRange().getValues();
+  const headers = values[0].map(function(h){return String(h).trim();});
+  const colDate=headers.indexOf('التاريخ'), colTime=headers.indexOf('الوقت'), colStudentId=headers.indexOf('رقم الطالب'),
+        colStudentName=headers.indexOf('اسم الطالب'), colTeacherId=headers.indexOf('رقم المدرس'), colTeacherName=headers.indexOf('اسم المدرس'),
+        colDuration=headers.indexOf('مدة الحصة'), colLink=headers.indexOf('رابط الحصة'), colStatus=headers.indexOf('حالة الحصة');
+  if(colDate===-1||colStudentId===-1||colStatus===-1) throw new Error('أعمدة ورقة الحصص الأساسية غير موجودة');
+
+  const now=new Date(); now.setSeconds(0,0);
+  const today=startOfDay_(now);
+  const futureRows=[], occupied={};
+  let completed=0, protectedFuture=0;
+
+  for(let i=1;i<values.length;i++){
+    const row=values[i];
+    if(String(row[colStudentId]||'').trim()!==String(data.studentId).trim()) continue;
+    const status=String(row[colStatus]||'').trim();
+    let d=row[colDate];
+    if(Object.prototype.toString.call(d)!=='[object Date]'||isNaN(d.getTime())) d=parseDate(d);
+    if(!d||isNaN(d.getTime())) continue;
+    const day=new Date(d); day.setHours(0,0,0,0);
+
+    if(status==='مكتملة') completed++;
+    if(status==='جارية'||status==='بانتظار التقرير'||status==='مكتملة'){
+      if((status==='جارية'||status==='بانتظار التقرير')&&day>=today) protectedFuture++;
+      occupied[Utilities.formatDate(day,Session.getScriptTimeZone(),'yyyy-MM-dd')+'|'+getLessonTimeKey_(row[colTime])]=true;
+    } else if(status==='لم تبدأ'&&day>=today){
+      futureRows.push({arrayIndex:i,sheetRow:i+1,date:day});
+    }
   }
 
-  if (!data.studentId) {
-    throw new Error('رقم الطالب مطلوب لمزامنة الحصص');
+  futureRows.sort(function(a,b){return a.date-b.date;});
+  const desiredCount=Math.max((Number(data.monthlyLessons)||0)-completed-protectedFuture,0);
+
+  const parts=String(data.lessonTime||'00:00').split(':'), hour=Number(parts[0]||0), minute=Number(parts[1]||0);
+  const cursor=new Date(startDate); cursor.setHours(0,0,0,0);
+  const desiredDates=[];
+
+  for(let n=0;n<370&&desiredDates.length<desiredCount;n++){
+    if(days.indexOf(cursor.getDay())!==-1){
+      const d=new Date(cursor); d.setHours(hour,minute,0,0);
+      const key=Utilities.formatDate(d,Session.getScriptTimeZone(),'yyyy-MM-dd')+'|'+Utilities.formatDate(d,Session.getScriptTimeZone(),'HH:mm');
+      if(d>=now && !occupied[key]){occupied[key]=true;desiredDates.push(d);}
+    }
+    cursor.setDate(cursor.getDate()+1);
   }
 
-  if (!data.teacherId) {
-    throw new Error('رقم المدرس مطلوب لمزامنة الحصص');
+  const keep=Math.min(futureRows.length,desiredDates.length);
+  let updated=0,deleted=0,created=0;
+
+  for(let i=0;i<keep;i++){
+    const row=values[futureRows[i].arrayIndex], d=desiredDates[i];
+    if(colDate!==-1) row[colDate]=d;
+    if(colTime!==-1) row[colTime]=Utilities.formatDate(d,Session.getScriptTimeZone(),'HH:mm');
+    if(colStudentName!==-1) row[colStudentName]=data.studentName||'';
+    if(colTeacherId!==-1) row[colTeacherId]=data.teacherId||'';
+    if(colTeacherName!==-1) row[colTeacherName]=data.teacherName||'';
+    if(colDuration!==-1) row[colDuration]=Number(data.lessonDuration)||30;
+    if(colLink!==-1) row[colLink]=data.lessonLink||'';
+    updated++;
   }
 
-  /*
-   * ==========================================
-   * الأيام الجديدة
-   * ==========================================
-   */
-
-  const days =
-    String(data.lessonDays || '')
-      .split(',')
-      .map(function(day) {
-        return Number(day);
-      })
-      .filter(function(day) {
-        return !isNaN(day) &&
-               day >= 0 &&
-               day <= 6;
-      });
-
-  if (days.length === 0) {
-    throw new Error('لم يتم تحديد أيام الحصص');
+  const rowsToDelete=futureRows.slice(keep).map(function(x){return x.sheetRow;});
+  if(rowsToDelete.length){
+    let start=rowsToDelete[rowsToDelete.length-1], count=1;
+    for(let i=rowsToDelete.length-2;i>=0;i--){
+      const r=rowsToDelete[i];
+      if(r===start-1){start=r;count++;}
+      else{lessonsSheet.deleteRows(start,count);deleted+=count;start=r;count=1;}
+    }
+    lessonsSheet.deleteRows(start,count); deleted+=count;
   }
 
-  /*
-   * إزالة التكرار وترتيب الأيام
-   */
+  if(updated>0) lessonsSheet.getRange(2,1,values.length-1,headers.length).setValues(values.slice(1));
 
-  const uniqueDays =
-    Array.from(new Set(days))
-      .sort(function(a, b) {
-        return a - b;
-      });
-
-  /*
-   * ==========================================
-   * تاريخ البداية
-   * ==========================================
-   */
-
-  const startDate =
-    parseDate(data.subscriptionStart);
-
-  if (!startDate ||
-      Object.prototype.toString.call(startDate) !== '[object Date]' ||
-      isNaN(startDate.getTime())) {
-
-    throw new Error(
-      'تاريخ بداية الاشتراك غير صحيح'
-    );
-
+  if(desiredDates.length>keep){
+    const generated={}, rows=[];
+    for(let i=keep;i<desiredDates.length;i++){
+      const d=desiredDates[i], id=createUniqueLessonId_(values,headers,generated);
+      generated[id]=true;
+      const r=new Array(headers.length).fill('');
+      setLessonRowValue_(r,headers,'رقم الحصة',id);
+      setLessonRowValue_(r,headers,'التاريخ',d);
+      setLessonRowValue_(r,headers,'الوقت',Utilities.formatDate(d,Session.getScriptTimeZone(),'HH:mm'));
+      setLessonRowValue_(r,headers,'رقم الطالب',String(data.studentId).trim());
+      setLessonRowValue_(r,headers,'اسم الطالب',data.studentName||'');
+      setLessonRowValue_(r,headers,'رقم المدرس',data.teacherId||'');
+      setLessonRowValue_(r,headers,'اسم المدرس',data.teacherName||'');
+      setLessonRowValue_(r,headers,'مدة الحصة',Number(data.lessonDuration)||30);
+      setLessonRowValue_(r,headers,'رابط الحصة',data.lessonLink||'');
+      setLessonRowValue_(r,headers,'حالة الحصة','لم تبدأ');
+      rows.push(r); created++;
+    }
+    if(rows.length) lessonsSheet.getRange(lessonsSheet.getLastRow()+1,1,rows.length,headers.length).setValues(rows);
   }
 
-  /*
-   * ==========================================
-   * وقت الحصة
-   * ==========================================
-   */
-
-  const timeParts =
-    String(data.lessonTime || '00:00')
-      .split(':');
-
-  const hour =
-    Number(timeParts[0] || 0);
-
-  const minute =
-    Number(timeParts[1] || 0);
-
-  /*
-   * ==========================================
-   * قراءة ورقة الحصص
-   * ==========================================
-   */
-
-  const lastRow =
-    lessonsSheet.getLastRow();
-
-  if (lastRow < 2) {
-
-    return {
-      success: true,
-      lessonsUpdated: 0
-    };
-
-  }
-
-  const range =
-    lessonsSheet.getDataRange();
-
-  const values =
-    range.getValues();
-
-  const headers =
-    values[0].map(function(h) {
-      return String(h).trim();
-    });
-
-  /*
-   * ==========================================
-   * تحديد الأعمدة
-   * ==========================================
-   */
-
-  const colLessonId =
-    headers.indexOf('رقم الحصة');
-
-  const colDate =
-    headers.indexOf('التاريخ');
-
-  const colTime =
-    headers.indexOf('الوقت');
-
-  const colStudentId =
-    headers.indexOf('رقم الطالب');
-
-  const colStudentName =
-    headers.indexOf('اسم الطالب');
-
-  const colTeacherId =
-    headers.indexOf('رقم المدرس');
-
-  const colTeacherName =
-    headers.indexOf('اسم المدرس');
-
-  const colDuration =
-    headers.indexOf('مدة الحصة');
-
-  const colLink =
-    headers.indexOf('رابط الحصة');
-
-  const colStatus =
-    headers.indexOf('حالة الحصة');
-
-  if (
-    colDate === -1 ||
-    colStudentId === -1 ||
-    colStatus === -1
-  ) {
-
-    throw new Error(
-      'أعمدة ورقة الحصص الأساسية غير موجودة'
-    );
-
-  }
-
-  /*
-   * ==========================================
-   * تاريخ اليوم
-   * ==========================================
-   */
-
-  const today =
-    new Date();
-
-  today.setHours(
-    0,
-    0,
-    0,
-    0
-  );
-
-  /*
-   * ==========================================
-   * الحصص القادمة الموجودة بالفعل
-   *
-   * مهم جدًا:
-   * لا ننشئ أي صف جديد هنا.
-   * ==========================================
-   */
-
-  const futureRows = [];
-
-  for (
-    let i = 1;
-    i < values.length;
-    i++
-  ) {
-
-    const row =
-      values[i];
-
-    const rowStudentId =
-      String(
-        row[colStudentId] || ''
-      ).trim();
-
-    if (
-      rowStudentId !==
-      String(data.studentId).trim()
-    ) {
-      continue;
-    }
-
-    const status =
-      String(
-        row[colStatus] || ''
-      ).trim();
-
-    /*
-     * لا نلمس الحصص التي بدأت أو انتهت
-     */
-
-    if (
-      status === 'جارية' ||
-      status === 'بانتظار التقرير' ||
-      status === 'مكتملة'
-    ) {
-      continue;
-    }
-
-    let lessonDate =
-      row[colDate];
-
-    if (
-      Object.prototype.toString.call(
-        lessonDate
-      ) !== '[object Date]' ||
-      isNaN(lessonDate.getTime())
-    ) {
-
-      lessonDate =
-        parseDate(lessonDate);
-
-    }
-
-    if (
-      !lessonDate ||
-      isNaN(lessonDate.getTime())
-    ) {
-      continue;
-    }
-
-    lessonDate =
-      new Date(lessonDate);
-
-    lessonDate.setHours(
-      0,
-      0,
-      0,
-      0
-    );
-
-    /*
-     * نعدّل الحصص القادمة فقط
-     */
-
-    if (lessonDate < today) {
-      continue;
-    }
-
-    futureRows.push({
-      arrayIndex: i,
-      sheetRow: i + 1,
-      date: lessonDate
-    });
-
-  }
-
-  /*
-   * ترتيب الحصص الحالية من الأقدم للأحدث
-   */
-
-  futureRows.sort(function(a, b) {
-
-    return a.date - b.date;
-
-  });
-
-  /*
-   * ==========================================
-   * بناء التواريخ الجديدة
-   *
-   * بنفس فكرة createStudentSchedule_
-   * ولكن بدون إنشاء أي صفوف جديدة.
-   * ==========================================
-   */
-
-  const desiredDates = [];
-
-  const normalizedStartDate =
-    new Date(startDate);
-
-  normalizedStartDate.setHours(
-    0,
-    0,
-    0,
-    0
-  );
-
-  /*
-   * 52 أسبوعًا مثل جدول الإنشاء الحالي
-   */
-
-  for (
-    let week = 0;
-    week < 52;
-    week++
-  ) {
-
-    for (
-      let i = 0;
-      i < uniqueDays.length;
-      i++
-    ) {
-
-      const targetDay =
-        uniqueDays[i];
-
-      const lessonDate =
-        new Date(normalizedStartDate);
-
-      const currentDay =
-        lessonDate.getDay();
-
-      let difference =
-        targetDay -
-        currentDay;
-
-      if (difference < 0) {
-        difference += 7;
-      }
-
-      difference +=
-        week * 7;
-
-      lessonDate.setDate(
-        lessonDate.getDate() +
-        difference
-      );
-
-      lessonDate.setHours(
-        hour,
-        minute,
-        0,
-        0
-      );
-
-      /*
-       * لا نعيد لمس حصص الماضي.
-       */
-
-      const compareDate =
-        new Date(lessonDate);
-
-      compareDate.setHours(
-        0,
-        0,
-        0,
-        0
-      );
-
-      if (compareDate < today) {
-        continue;
-      }
-
-      desiredDates.push(
-        lessonDate
-      );
-
-    }
-
-  }
-
-  /*
-   * ترتيب التواريخ الجديدة
-   */
-
-  desiredDates.sort(function(a, b) {
-
-    return a - b;
-
-  });
-
-  /*
-   * ==========================================
-   * تحديث الحصص الموجودة
-   *
-   * لا appendRow
-   * لا createStudentSchedule_
-   * لا إنشاء سلسلة جديدة
-   * ==========================================
-   */
-
-  const updateCount =
-    Math.min(
-      futureRows.length,
-      desiredDates.length
-    );
-
-  for (
-    let i = 0;
-    i < updateCount;
-    i++
-  ) {
-
-    const futureLesson =
-      futureRows[i];
-
-    const newDate =
-      desiredDates[i];
-
-    const row =
-      values[
-        futureLesson.arrayIndex
-      ];
-
-    /*
-     * التاريخ
-     */
-
-    if (colDate !== -1) {
-
-      row[colDate] =
-        newDate;
-
-    }
-
-    /*
-     * الوقت
-     */
-
-    if (colTime !== -1) {
-
-      row[colTime] =
-        Utilities.formatDate(
-          newDate,
-          Session.getScriptTimeZone(),
-          'HH:mm'
-        );
-
-    }
-
-    /*
-     * اسم الطالب
-     */
-
-    if (colStudentName !== -1) {
-
-      row[colStudentName] =
-        data.studentName || '';
-
-    }
-
-    /*
-     * المدرس
-     */
-
-    if (colTeacherId !== -1) {
-
-      row[colTeacherId] =
-        data.teacherId || '';
-
-    }
-
-    if (colTeacherName !== -1) {
-
-      row[colTeacherName] =
-        data.teacherName || '';
-
-    }
-
-    /*
-     * مدة الحصة
-     */
-
-    if (colDuration !== -1) {
-
-      row[colDuration] =
-        Number(
-          data.lessonDuration
-        ) || 30;
-
-    }
-
-    /*
-     * رابط الحصة
-     */
-
-    if (colLink !== -1) {
-
-      row[colLink] =
-        data.lessonLink || '';
-
-    }
-
-  }
-
-  /*
-   * ==========================================
-   * كتابة التعديلات مرة واحدة
-   * ==========================================
-   */
-
-  if (updateCount > 0) {
-
-    lessonsSheet
-      .getRange(
-        2,
-        1,
-        values.length - 1,
-        headers.length
-      )
-      .setValues(
-        values.slice(1)
-      );
-
-  }
-
-  return {
-
-    success: true,
-
-    lessonsUpdated:
-      updateCount,
-
-    existingFutureLessons:
-      futureRows.length,
-
-    targetFutureLessons:
-      desiredDates.length
-
-  };
-
+  return {success:true,lessonsUpdated:updated,lessonsCreated:created,lessonsDeleted:deleted,desiredFutureCount:desiredCount};
 }
 
 
@@ -3156,252 +2727,60 @@ function generateStudentId_() {
 ========================= */
 
 function deleteStudent_(id) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const studentsSheet = ss.getSheetByName('الطلاب');
+  const lessonsSheet = ss.getSheetByName('الحصص');
+  if (!studentsSheet) throw new Error('ورقة الطلاب غير موجودة');
 
-  const ss =
-    SpreadsheetApp.getActiveSpreadsheet();
-
-  const studentsSheet =
-    ss.getSheetByName('الطلاب');
-
-  const lessonsSheet =
-    ss.getSheetByName('الحصص');
-
-
-  if (!studentsSheet) {
-    throw new Error(
-      'ورقة الطلاب غير موجودة'
-    );
-  }
-
-
-  const targetId =
-    String(id).trim();
-
-
-  /*
-   * ==========================================
-   * أولًا: حذف الحصص المستقبلية
-   *
-   * نحذف فقط:
-   * لم تبدأ
-   *
-   * ولا نحذف:
-   * مكتملة
-   * جارية
-   * بانتظار التقرير
-   * ==========================================
-   */
-
+  const targetId = String(id).trim();
   let deletedLessons = 0;
 
+  if (lessonsSheet && lessonsSheet.getLastRow() >= 2) {
+    const data = lessonsSheet.getDataRange().getValues();
+    const headers = data[0].map(function(h){ return String(h).trim(); });
+    const studentIdCol = headers.indexOf('رقم الطالب');
+    const dateCol = headers.indexOf('التاريخ');
+    const statusCol = headers.indexOf('حالة الحصة');
 
-  if (lessonsSheet) {
+    if (studentIdCol !== -1 && dateCol !== -1 && statusCol !== -1) {
+      const today = startOfDay_(new Date());
+      const rowsToDelete = [];
 
-    const lastLessonRow =
-      lessonsSheet.getLastRow();
+      for (let i=1;i<data.length;i++) {
+        const row=data[i];
+        if (String(row[studentIdCol]||'').trim() !== targetId) continue;
+        if (String(row[statusCol]||'').trim() !== 'لم تبدأ') continue;
 
-
-    if (lastLessonRow >= 2) {
-
-      const data =
-        lessonsSheet
-          .getDataRange()
-          .getValues();
-
-
-      const headers =
-        data[0].map(function(h) {
-          return String(h).trim();
-        });
-
-
-      const studentIdCol =
-        headers.indexOf('رقم الطالب');
-
-      const dateCol =
-        headers.indexOf('التاريخ');
-
-      const statusCol =
-        headers.indexOf('حالة الحصة');
-
-
-      if (
-        studentIdCol !== -1 &&
-        dateCol !== -1 &&
-        statusCol !== -1
-      ) {
-
-        const today =
-          startOfDay_(
-            new Date()
-          );
-
-
-        /*
-         * نجمع أرقام الصفوف المراد حذفها
-         */
-        const rowsToDelete = [];
-
-
-        for (
-          let i = 1;
-          i < data.length;
-          i++
-        ) {
-
-          const row =
-            data[i];
-
-
-          if (
-            String(
-              row[studentIdCol] || ''
-            ).trim() !==
-            targetId
-          ) {
-            continue;
-          }
-
-
-          const status =
-            String(
-              row[statusCol] || ''
-            ).trim();
-
-
-          /*
-           * لا نحذف أي حصة تم تنفيذها
-           * أو بدأت بالفعل.
-           */
-          if (
-            status !== 'لم تبدأ'
-          ) {
-            continue;
-          }
-
-
-          let lessonDate =
-            row[dateCol];
-
-
-          if (
-            Object.prototype.toString.call(
-              lessonDate
-            ) !== '[object Date]'
-          ) {
-
-            lessonDate =
-              parseDate(
-                lessonDate
-              );
-
-          }
-
-
-          if (
-            !lessonDate ||
-            isNaN(
-              lessonDate.getTime()
-            )
-          ) {
-            continue;
-          }
-
-
-          /*
-           * نحذف اليوم والمستقبل
-           */
-          if (
-            lessonDate >= today
-          ) {
-
-            rowsToDelete.push(
-              i + 1
-            );
-
-          }
-
-        }
-
-
-        /*
-         * الحذف من أسفل لأعلى
-         * حتى لا تتغير أرقام الصفوف.
-         */
-        for (
-          let i =
-            rowsToDelete.length - 1;
-          i >= 0;
-          i--
-        ) {
-
-          lessonsSheet.deleteRow(
-            rowsToDelete[i]
-          );
-
-          deletedLessons++;
-
-        }
-
+        let d=row[dateCol];
+        if (Object.prototype.toString.call(d)!=='[object Date]') d=parseDate(d);
+        if (!d || isNaN(d.getTime())) continue;
+        if (d >= today) rowsToDelete.push(i+1);
       }
 
+      if (rowsToDelete.length) {
+        let start=rowsToDelete[rowsToDelete.length-1], count=1;
+        for(let i=rowsToDelete.length-2;i>=0;i--){
+          const r=rowsToDelete[i];
+          if(r===start-1){ start=r; count++; }
+          else {
+            lessonsSheet.deleteRows(start,count);
+            deletedLessons += count;
+            start=r; count=1;
+          }
+        }
+        lessonsSheet.deleteRows(start,count);
+        deletedLessons += count;
+      }
     }
-
   }
 
-
-  /*
-   * ==========================================
-   * ثانيًا: حذف الطالب من ورقة الطلاب
-   * ==========================================
-   */
-
-  const data =
-    studentsSheet
-      .getDataRange()
-      .getValues();
-
-
-  for (
-    let i = 1;
-    i < data.length;
-    i++
-  ) {
-
-    if (
-      String(
-        data[i][0]
-      ).trim() !==
-      targetId
-    ) {
-      continue;
-    }
-
-
-    studentsSheet.deleteRow(
-      i + 1
-    );
-
-
-    return {
-
-      success: true,
-
-      message:
-        'تم حذف الطالب وحذف الحصص المستقبلية فقط',
-
-      deletedLessons:
-        deletedLessons
-
-    };
-
+  const data = studentsSheet.getDataRange().getValues();
+  for(let i=1;i<data.length;i++){
+    if(String(data[i][0]).trim() !== targetId) continue;
+    studentsSheet.deleteRow(i+1);
+    return {success:true,message:'تم حذف الطالب وحذف الحصص المستقبلية فقط',deletedLessons:deletedLessons};
   }
-
-
-  throw new Error(
-    'لم يتم العثور على الطالب'
-  );
-
+  throw new Error('لم يتم العثور على الطالب');
 }
 
 
