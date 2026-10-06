@@ -3692,6 +3692,86 @@ function generateLessonId_() {
    جلب الحصص
 ========================= */
 
+function getLessonsForRange(token, startDateText, endDateText) {
+  const user = requireAuth_(token, ['admin','teacher','student']);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('الحصص');
+  if (!sheet) return [];
+  const start = parseDate(startDateText), end = parseDate(endDateText);
+  if (!start || !end) throw new Error('نطاق التاريخ غير صحيح');
+  start.setHours(0,0,0,0); end.setHours(23,59,59,999);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  const dates = sheet.getRange(2,2,lastRow-1,1).getValues();
+  const ranges = [];
+  let s=-1,n=0;
+  for(let i=0;i<dates.length;i++){
+    let d=dates[i][0];
+    if(!(d instanceof Date)||isNaN(d.getTime())) d=parseDate(d);
+    const ok=d&&!isNaN(d.getTime())&&d>=start&&d<=end;
+    if(ok){if(s<0)s=i;n++;}
+    else if(s>=0){ranges.push([s,n]);s=-1;n=0;}
+  }
+  if(s>=0) ranges.push([s,n]);
+
+  const result=[];
+  ranges.forEach(function(g){
+    sheet.getRange(g[0]+2,1,g[1],14).getValues().forEach(function(row){
+      const lesson={
+        id:String(row[0]||''), date:formatDate(row[1]), time:formatTime(row[2]),
+        studentId:String(row[3]||''), studentName:String(row[4]||''),
+        teacherId:String(row[5]||''), teacherName:String(row[6]||''),
+        duration:Number(row[7])||30, lessonLink:String(row[8]||''),
+        status:String(row[9]||'لم تبدأ'), startTime:formatDateTime(row[10]),
+        endTime:formatDateTime(row[11]), reportId:String(row[12]||''), teacherPay:Number(row[13])||0
+      };
+      if(user.role==='teacher' && String(lesson.teacherId).trim()!==String(user.linkedId||'').trim()) return;
+      if(user.role==='student' && String(lesson.studentId).trim()!==String(user.linkedId||'').trim()) return;
+      if(user.role==='student') lesson.teacherPay=0;
+      result.push(lesson);
+    });
+  });
+  result.sort(function(a,b){return String(a.date).localeCompare(String(b.date)) || timeMinutes_(a.time)-timeMinutes_(b.time);});
+  return result;
+}
+function getLessonsForDate(token, selectedDate) {
+  return getLessonsForRange(token, selectedDate, selectedDate);
+}
+function timeMinutes_(v) {
+  const m=String(v||'').match(/^(\d{1,2}):(\d{2})/);
+  return m ? Number(m[1])*60+Number(m[2]) : 0;
+}
+function getLessonFlagsForRange(token,startDateText,endDateText) {
+  const user=requireAuth_(token,['admin','teacher','student']);
+  const sheet=SpreadsheetApp.getActiveSpreadsheet().getSheetByName('الحصص');
+  if(!sheet) return {};
+  const start=parseDate(startDateText), end=parseDate(endDateText);
+  if(!start||!end) throw new Error('نطاق التاريخ غير صحيح');
+  start.setHours(0,0,0,0); end.setHours(23,59,59,999);
+  const lastRow=sheet.getLastRow();
+  if(lastRow<2) return {};
+  const values=sheet.getRange(2,1,lastRow-1,14).getValues();
+  const result={};
+  const headers=sheet.getRange(1,1,1,Math.max(14,sheet.getLastColumn())).getValues()[0].map(function(h){return String(h).trim();});
+  const cFlag=headers.indexOf(typeof LESSON_ADMIN_FLAG_HEADER_!=='undefined'?LESSON_ADMIN_FLAG_HEADER_:'__none__');
+  const cTeacher=headers.indexOf(typeof LESSON_ADMIN_ORIG_TEACHER_!=='undefined'?LESSON_ADMIN_ORIG_TEACHER_:'__none__');
+  const cDate=headers.indexOf(typeof LESSON_ADMIN_ORIG_DATE_!=='undefined'?LESSON_ADMIN_ORIG_DATE_:'__none__');
+  values.forEach(function(r){
+    let d=r[1]; if(!(d instanceof Date)||isNaN(d.getTime())) d=parseDate(d);
+    if(!d||isNaN(d.getTime())||d<start||d>end) return;
+    const teacherId=String(r[5]||'').trim(), studentId=String(r[3]||'').trim();
+    if(user.role==='teacher'&&teacherId!==String(user.linkedId||'').trim()) return;
+    if(user.role==='student'&&studentId!==String(user.linkedId||'').trim()) return;
+    const id=String(r[0]||'').trim(); if(!id)return;
+    const flag=cFlag>=0?String(r[cFlag]||'').trim():'';
+    const origTeacher=cTeacher>=0?String(r[cTeacher]||'').trim():'';
+    let origDate='';
+    if(cDate>=0){const x=r[cDate]; origDate=x instanceof Date?Utilities.formatDate(x,Session.getScriptTimeZone(),'yyyy-MM-dd HH:mm'):String(x||'').trim();}
+    if(flag||origTeacher||origDate) result[id]={attendance:flag,originalTeacher:user.role==='student'?'':origTeacher,originalDate:user.role==='student'?'':origDate};
+  });
+  return result;
+}
+
 function getLessons_() {
 
   const sheet = SpreadsheetApp
