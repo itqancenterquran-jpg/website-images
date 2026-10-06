@@ -3741,34 +3741,120 @@ function timeMinutes_(v) {
   const m=String(v||'').match(/^(\d{1,2}):(\d{2})/);
   return m ? Number(m[1])*60+Number(m[2]) : 0;
 }
-function getLessonFlagsForRange(token,startDateText,endDateText) {
-  const user=requireAuth_(token,['admin','teacher','student']);
-  const sheet=SpreadsheetApp.getActiveSpreadsheet().getSheetByName('الحصص');
-  if(!sheet) return {};
-  const start=parseDate(startDateText), end=parseDate(endDateText);
-  if(!start||!end) throw new Error('نطاق التاريخ غير صحيح');
-  start.setHours(0,0,0,0); end.setHours(23,59,59,999);
-  const lastRow=sheet.getLastRow();
-  if(lastRow<2) return {};
-  const values=sheet.getRange(2,1,lastRow-1,14).getValues();
-  const result={};
-  const headers=sheet.getRange(1,1,1,Math.max(14,sheet.getLastColumn())).getValues()[0].map(function(h){return String(h).trim();});
-  const cFlag=headers.indexOf(typeof LESSON_ADMIN_FLAG_HEADER_!=='undefined'?LESSON_ADMIN_FLAG_HEADER_:'__none__');
-  const cTeacher=headers.indexOf(typeof LESSON_ADMIN_ORIG_TEACHER_!=='undefined'?LESSON_ADMIN_ORIG_TEACHER_:'__none__');
-  const cDate=headers.indexOf(typeof LESSON_ADMIN_ORIG_DATE_!=='undefined'?LESSON_ADMIN_ORIG_DATE_:'__none__');
-  values.forEach(function(r){
-    let d=r[1]; if(!(d instanceof Date)||isNaN(d.getTime())) d=parseDate(d);
-    if(!d||isNaN(d.getTime())||d<start||d>end) return;
-    const teacherId=String(r[5]||'').trim(), studentId=String(r[3]||'').trim();
-    if(user.role==='teacher'&&teacherId!==String(user.linkedId||'').trim()) return;
-    if(user.role==='student'&&studentId!==String(user.linkedId||'').trim()) return;
-    const id=String(r[0]||'').trim(); if(!id)return;
-    const flag=cFlag>=0?String(r[cFlag]||'').trim():'';
-    const origTeacher=cTeacher>=0?String(r[cTeacher]||'').trim():'';
-    let origDate='';
-    if(cDate>=0){const x=r[cDate]; origDate=x instanceof Date?Utilities.formatDate(x,Session.getScriptTimeZone(),'yyyy-MM-dd HH:mm'):String(x||'').trim();}
-    if(flag||origTeacher||origDate) result[id]={attendance:flag,originalTeacher:user.role==='student'?'':origTeacher,originalDate:user.role==='student'?'':origDate};
+function getLessonFlagsForRange(token, startDateText, endDateText) {
+  const user = requireAuth_(token, ['admin','teacher','student']);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('الحصص');
+  if (!sheet) return {};
+
+  const start = parseDate(startDateText);
+  const end = parseDate(endDateText);
+  if (!start || !end) throw new Error('نطاق التاريخ غير صحيح');
+
+  start.setHours(0,0,0,0);
+  end.setHours(23,59,59,999);
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return {};
+
+  const lastCol = Math.max(14, sheet.getLastColumn());
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0]
+    .map(function(h) { return String(h).trim(); });
+
+  const cFlag = headers.indexOf(
+    typeof LESSON_ADMIN_FLAG_HEADER_ !== 'undefined'
+      ? LESSON_ADMIN_FLAG_HEADER_
+      : '__none__'
+  );
+  const cTeacher = headers.indexOf(
+    typeof LESSON_ADMIN_ORIG_TEACHER_ !== 'undefined'
+      ? LESSON_ADMIN_ORIG_TEACHER_
+      : '__none__'
+  );
+  const cDate = headers.indexOf(
+    typeof LESSON_ADMIN_ORIG_DATE_ !== 'undefined'
+      ? LESSON_ADMIN_ORIG_DATE_
+      : '__none__'
+  );
+
+  if (cFlag === -1 && cTeacher === -1 && cDate === -1) return {};
+
+  // نقرأ عمود التاريخ فقط أولًا، بدل قراءة كل الحصص.
+  const dateValues = sheet.getRange(2, 2, lastRow - 1, 1).getValues();
+
+  const ranges = [];
+  let startIndex = -1;
+  let count = 0;
+
+  for (let i = 0; i < dateValues.length; i++) {
+    let d = dateValues[i][0];
+    if (!(d instanceof Date) || isNaN(d.getTime())) d = parseDate(d);
+
+    const inRange = d && !isNaN(d.getTime()) && d >= start && d <= end;
+
+    if (inRange) {
+      if (startIndex < 0) startIndex = i;
+      count++;
+    } else if (startIndex >= 0) {
+      ranges.push([startIndex, count]);
+      startIndex = -1;
+      count = 0;
+    }
+  }
+
+  if (startIndex >= 0) ranges.push([startIndex, count]);
+
+  const result = {};
+
+  ranges.forEach(function(group) {
+    const rows = sheet.getRange(group[0] + 2, 1, group[1], lastCol).getValues();
+
+    rows.forEach(function(r) {
+      const id = String(r[0] || '').trim();
+      if (!id) return;
+
+      const teacherId = String(r[5] || '').trim();
+      const studentId = String(r[3] || '').trim();
+
+      if (
+        user.role === 'teacher' &&
+        teacherId !== String(user.linkedId || '').trim()
+      ) return;
+
+      if (
+        user.role === 'student' &&
+        studentId !== String(user.linkedId || '').trim()
+      ) return;
+
+      const flag = cFlag >= 0 ? String(r[cFlag] || '').trim() : '';
+      const originalTeacher = cTeacher >= 0
+        ? String(r[cTeacher] || '').trim()
+        : '';
+
+      let originalDate = '';
+      if (cDate >= 0) {
+        const x = r[cDate];
+        originalDate = x instanceof Date
+          ? Utilities.formatDate(
+              x,
+              Session.getScriptTimeZone(),
+              'yyyy-MM-dd HH:mm'
+            )
+          : String(x || '').trim();
+      }
+
+      if (!flag && !originalTeacher && !originalDate) return;
+
+      result[id] = {
+        attendance: flag
+      };
+
+      if (user.role !== 'student') {
+        result[id].originalTeacher = originalTeacher;
+        result[id].originalDate = originalDate;
+      }
+    });
   });
+
   return result;
 }
 
